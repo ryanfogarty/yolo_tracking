@@ -1,5 +1,5 @@
 # https://github.com/ultralytics/ultralytics/issues/1429#issuecomment-1519239409
-
+import sys, os
 from pathlib import Path
 import torch
 import argparse
@@ -25,6 +25,7 @@ from ultralytics.yolo.engine.results import Boxes
 from ultralytics.yolo.data.utils import VID_FORMATS
 from ultralytics.yolo.utils.plotting import save_one_box
 
+sys.path.append(os.path.dirname(__file__))
 from multi_yolo_backend import MultiYolo
 from utils import write_MOT_results
 
@@ -32,15 +33,16 @@ FILE = Path(__file__).resolve()
 ROOT = FILE.parents[1]
 WEIGHTS = ROOT / 'weights'
 
+
 def on_predict_start(predictor):
     predictor.trackers = []
     predictor.tracker_outputs = [None] * predictor.dataset.bs
     predictor.args.tracking_config = \
         ROOT /\
         'boxmot' /\
-        opt.tracking_method /\
+        predictor.args.tracking_method /\
         'configs' /\
-        (opt.tracking_method + '.yaml')
+        (predictor.args.tracking_method + '.yaml')
     for i in range(predictor.dataset.bs):
         tracker = create_tracker(
             predictor.args.tracking_method,
@@ -54,7 +56,6 @@ def on_predict_start(predictor):
 
 @torch.no_grad()
 def run(args):
-    
     model = YOLO(args['yolo_model'] if 'v8' in str(args['yolo_model']) else 'yolov8n')
     overrides = model.overrides.copy()
     model.predictor = TASK_MAP[model.task][3](overrides=overrides, _callbacks=model.callbacks)

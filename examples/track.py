@@ -8,7 +8,7 @@ import cv2
 from types import SimpleNamespace
 
 from boxmot.tracker_zoo import create_tracker
-from boxmot.utils import ROOT, WEIGHTS
+#from boxmot.utils import WEIGHTS
 from boxmot.utils.checks import TestRequirements
 from boxmot.utils import logger as LOGGER
 from boxmot.utils.torch_utils import select_device
@@ -28,6 +28,9 @@ from ultralytics.yolo.utils.plotting import save_one_box
 from multi_yolo_backend import MultiYolo
 from utils import write_MOT_results
 
+FILE = Path(__file__).resolve()
+ROOT = FILE.parents[1]
+WEIGHTS = ROOT / 'weights'
 
 def on_predict_start(predictor):
     predictor.trackers = []
@@ -89,6 +92,9 @@ def run(args):
         device=predictor.device,
         args=predictor.args
     )
+
+    carIds = {}
+    carCount = 0
     for frame_idx, batch in enumerate(predictor.dataset):
         predictor.run_callbacks('on_predict_batch_start')
         predictor.batch = batch
@@ -111,10 +117,10 @@ def run(args):
             predictor.results = model.postprocess(path, preds, im, im0s, predictor)
         predictor.run_callbacks('on_predict_postprocess_end')
         
+
         # Visualize, save, write results
         n = len(im0s)
         for i in range(n):
-            
             if predictor.dataset.source_type.tensor:  # skip write, show and plot operations if input is raw tensor
                 continue
             p, im0 = path[i], im0s[i].copy()
@@ -136,6 +142,16 @@ def run(args):
             model.filter_results(i, predictor)
             # overwrite bbox results with tracker predictions
             model.overwrite_results(i, im0.shape[:2], predictor)
+
+            if(predictor.results[i].boxes.id is not None):
+                id = int(predictor.results[i].boxes.id[0])
+                if id in carIds:
+                    carIds[id] += 1
+                    if carIds[id] == 5:
+                        carCount += 1
+                else:
+                    carIds[id] = 1
+                LOGGER.info("Car count: " + str(carCount))
             
             # write inference results to a file or directory   
             if predictor.args.verbose or predictor.args.save or predictor.args.save_txt or predictor.args.show or predict.args.save_id_crops:
@@ -198,11 +214,11 @@ def run(args):
         LOGGER.info(f"Results saved to {colorstr('bold', predictor.save_dir)}{s}")
 
     predictor.run_callbacks('on_predict_end')
-    
+    return carCount
 
 def parse_opt():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--yolo-model', type=Path, default=WEIGHTS / 'yolov8n.pt', help='model.pt path(s)')
+    parser.add_argument('--yolo-model', type=Path, default=WEIGHTS / 'bestv8.pt', help='model.pt path(s)')
     parser.add_argument('--reid-model', type=Path, default=WEIGHTS / 'mobilenetv2_x1_4_dukemtmcreid.pt')
     parser.add_argument('--tracking-method', type=str, default='deepocsort', help='deepocsort, botsort, strongsort, ocsort, bytetrack')
     parser.add_argument('--source', type=str, default='0', help='file/dir/URL/glob, 0 for webcam')  
@@ -211,14 +227,14 @@ def parse_opt():
     parser.add_argument('--iou', type=float, default=0.7, help='intersection over union (IoU) threshold for NMS')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--show', action='store_true', help='display tracking video results')
-    parser.add_argument('--save', action='store_true', help='save video tracking results')
+    parser.add_argument('--save', default=True, action='store_true', help='save video tracking results')
     # # class 0 is person, 1 is bycicle, 2 is car... 79 is oven
     parser.add_argument('--classes', nargs='+', type=int, help='filter by class: --classes 0, or --classes 0 2 3')
     parser.add_argument('--project', default=ROOT / 'runs' / 'track', help='save results to project/name')
     parser.add_argument('--name', default='exp', help='save results to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
-    parser.add_argument('--vid-stride', type=int, default=1, help='video frame-rate stride')
+    parser.add_argument('--vid-stride', type=int, default=4, help='video frame-rate stride')
     parser.add_argument('--hide-label', action='store_true', help='hide labels when show')
     parser.add_argument('--hide-conf', action='store_true', help='hide confidences when show')
     parser.add_argument('--save-txt', action='store_true', help='save tracking results in a txt file')

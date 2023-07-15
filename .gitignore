@@ -1,13 +1,22 @@
 .vscode/
+.venv/
+.eggs/
 env/
-
+*.DS_Store
 # interpreter bytecode
 __pycache__/
 
 # experiment results
 runs/
 videos/
-weights
+
+# Downloaded weights
+weights/*.pt
+weights/*.torchscript
+weights/*.onnx
+weights/*_openvino_model
+weights/*.engine
+weights/*.tflite
 
 # evaluation tools folder
 val_utils/

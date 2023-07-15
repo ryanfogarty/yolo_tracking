@@ -1,4 +1,3 @@
-from pathlib import Path
 import yaml
 from types import SimpleNamespace
 from boxmot.utils import BOXMOT
@@ -7,20 +6,19 @@ from boxmot.utils import BOXMOT
 def get_tracker_config(tracker_type):
     tracking_config = \
         BOXMOT /\
-        tracker_type /\
         'configs' /\
         (tracker_type + '.yaml')
     return tracking_config
     
 
-def create_tracker(tracker_type, tracker_config, reid_weights, device, half):
+def create_tracker(tracker_type, tracker_config, reid_weights, device, half, per_class):
 
     with open(tracker_config, "r") as f:
         cfg = yaml.load(f.read(), Loader=yaml.FullLoader)
     cfg = SimpleNamespace(**cfg)  # easier dict acces by dot, instead of ['']
     
     if tracker_type == 'strongsort':
-        from boxmot.strongsort.strong_sort import StrongSORT
+        from boxmot.trackers import StrongSORT
         strongsort = StrongSORT(
             reid_weights,
             device,
@@ -38,8 +36,9 @@ def create_tracker(tracker_type, tracker_config, reid_weights, device, half):
         return strongsort
     
     elif tracker_type == 'ocsort':
-        from boxmot.ocsort.ocsort import OCSort
+        from boxmot.trackers import OCSort
         ocsort = OCSort(
+            per_class,
             det_thresh=cfg.det_thresh,
             max_age=cfg.max_age,
             min_hits=cfg.min_hits,
@@ -52,7 +51,7 @@ def create_tracker(tracker_type, tracker_config, reid_weights, device, half):
         return ocsort
     
     elif tracker_type == 'bytetrack':
-        from boxmot.bytetrack.byte_tracker import BYTETracker
+        from boxmot.trackers import BYTETracker
         bytetracker = BYTETracker(
             track_thresh=cfg.track_thresh,
             match_thresh=cfg.match_thresh,
@@ -62,7 +61,7 @@ def create_tracker(tracker_type, tracker_config, reid_weights, device, half):
         return bytetracker
     
     elif tracker_type == 'botsort':
-        from boxmot.botsort.bot_sort import BoTSORT
+        from boxmot.trackers import BoTSORT
         botsort = BoTSORT(
             reid_weights,
             device,
@@ -79,11 +78,12 @@ def create_tracker(tracker_type, tracker_config, reid_weights, device, half):
         )
         return botsort
     elif tracker_type == 'deepocsort':
-        from boxmot.deepocsort.ocsort import OCSort
-        deepocsort = OCSort(
+        from boxmot.trackers import DeepOCSort
+        deepocsort = DeepOCSort(
             reid_weights,
             device,
             half,
+            per_class,
             det_thresh=cfg.det_thresh,
             max_age=cfg.max_age,
             min_hits=cfg.min_hits,

@@ -3,25 +3,24 @@ import sys, os
 from pathlib import Path
 import torch
 import argparse
-import numpy as np
 import cv2
-from types import SimpleNamespace
 
 from boxmot.tracker_zoo import create_tracker
 #from boxmot.utils import WEIGHTS
 from boxmot.utils.checks import TestRequirements
+from boxmot.utils import ROOT, WEIGHTS
 from boxmot.utils import logger as LOGGER
 from boxmot.utils.torch_utils import select_device
 
-tr = TestRequirements()
-tr.check_packages(('ultralytics',))  # install
+from boxmot.utils.checks import TestRequirements
+__tr = TestRequirements()
+__tr.check_packages(('ultralytics==8.0.124',))  # install
 
 from ultralytics.yolo.engine.model import YOLO, TASK_MAP
 
-from ultralytics.yolo.utils import SETTINGS, colorstr, ops, is_git_dir, IterableSimpleNamespace
-from ultralytics.yolo.utils.checks import check_imgsz, print_args
+from ultralytics.yolo.utils import colorstr, ops, IterableSimpleNamespace
+from ultralytics.yolo.utils.checks import check_imgsz
 from ultralytics.yolo.utils.files import increment_path
-from ultralytics.yolo.engine.results import Boxes
 from ultralytics.yolo.data.utils import VID_FORMATS
 from ultralytics.yolo.utils.plotting import save_one_box
 
@@ -32,6 +31,11 @@ from utils import write_MOT_results
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[1]
 WEIGHTS = ROOT / 'weights'
+from detectors.yolo_processor import Yolo
+from detectors.strategy import find_yolo_engine
+from utils import write_MOT_results
+
+from boxmot.utils import EXAMPLES
 
 
 def on_predict_start(predictor):
@@ -49,7 +53,8 @@ def on_predict_start(predictor):
             predictor.args.tracking_config,
             predictor.args.reid_model,
             predictor.device,
-            predictor.args.half
+            predictor.args.half,
+            predictor.args.per_class
         )
         predictor.trackers.append(tracker)
 
@@ -87,8 +92,10 @@ def run(args):
         predictor.done_warmup = True
     predictor.seen, predictor.windows, predictor.batch, predictor.profilers = 0, [], None, (ops.Profile(), ops.Profile(), ops.Profile(), ops.Profile())
     predictor.add_callback('on_predict_start', on_predict_start)
-    predictor.run_callbacks('on_predict_start')
-    model = MultiYolo(
+    predictor.run_callbacks('on_predict_start') 
+
+    yolo_strategy = find_yolo_engine(args['yolo_model'])
+    yolo_strategy = yolo_strategy(
         model=model.predictor.model if 'v8' in str(args['yolo_model']) else args['yolo_model'],
         device=predictor.device,
         args=predictor.args
@@ -96,11 +103,12 @@ def run(args):
 
     carIds = {}
     carCount = 0
+    model = Yolo(yolo_strategy)
+
     for frame_idx, batch in enumerate(predictor.dataset):
         predictor.run_callbacks('on_predict_batch_start')
         predictor.batch = batch
         path, im0s, vid_cap, s = batch
-        visualize = increment_path(save_dir / Path(path[0]).stem, exist_ok=True, mkdir=True) if predictor.args.visualize and (not predictor.dataset.source_type.tensor) else False
 
         n = len(im0s)
         predictor.results = [None] * n
@@ -111,7 +119,7 @@ def run(args):
 
         # Inference
         with predictor.profilers[1]:
-            preds = model(im, im0s)
+            preds = model.inference(im=im)
 
         # Postprocess moved to MultiYolo
         with predictor.profilers[2]:
@@ -155,7 +163,7 @@ def run(args):
                 LOGGER.info("Car count: " + str(carCount))
             
             # write inference results to a file or directory   
-            if predictor.args.verbose or predictor.args.save or predictor.args.save_txt or predictor.args.show or predict.args.save_id_crops:
+            if predictor.args.verbose or predictor.args.save or predictor.args.save_txt or predictor.args.show or predictor.args.save_id_crops:
                 
                 s += predictor.write_results(i, predictor.results, (p, im, im0))
                 predictor.txt_path = Path(predictor.txt_path)
@@ -168,8 +176,6 @@ def run(args):
                     predictor.MOT_txt_path = predictor.txt_path.parent / p.parent.name
                     
                 if predictor.tracker_outputs[i].size != 0 and predictor.args.save_mot:
-                    # needed if txt save is not activated, otherwise redundant
-                    predictor.MOT_txt_path.mkdir(parents=True, exist_ok=predictor.args.exist_ok)
                     write_MOT_results(
                         predictor.MOT_txt_path,
                         predictor.results[i],
@@ -231,16 +237,22 @@ def parse_opt():
     parser.add_argument('--save', default=True, action='store_true', help='save video tracking results')
     # # class 0 is person, 1 is bycicle, 2 is car... 79 is oven
     parser.add_argument('--classes', nargs='+', type=int, help='filter by class: --classes 0, or --classes 0 2 3')
-    parser.add_argument('--project', default=ROOT / 'runs' / 'track', help='save results to project/name')
+    parser.add_argument('--project', default=EXAMPLES / 'runs' / 'track', help='save results to project/name')
     parser.add_argument('--name', default='exp', help='save results to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
     parser.add_argument('--vid-stride', type=int, default=4, help='video frame-rate stride')
     parser.add_argument('--hide-label', action='store_true', help='hide labels when show')
     parser.add_argument('--hide-conf', action='store_true', help='hide confidences when show')
+    parser.add_argument('--vid-stride', type=int, default=1, help='video frame-rate stride')
+    parser.add_argument('--show-labels', action='store_false', help='hide labels when show')
+    parser.add_argument('--show-conf', action='store_false', help='hide confidences when show')
     parser.add_argument('--save-txt', action='store_true', help='save tracking results in a txt file')
     parser.add_argument('--save-id-crops', action='store_true', help='save each crop to its respective id folder')
     parser.add_argument('--save-mot', action='store_true', help='save tracking results in a single txt file')
+    parser.add_argument('--line-width', default=None, type=int, help='The line width of the bounding boxes. If None, it is scaled to the image size.')
+    parser.add_argument('--per-class', action='store_true', help='not mix up classes when tracking')
+    
     opt = parser.parse_args()
     return opt
 

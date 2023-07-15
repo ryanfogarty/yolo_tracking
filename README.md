@@ -3,24 +3,25 @@
 
 <div align="center">
   <p>
-  <img src="boxmot/strongsort/results/track_all_seg_1280_025conf.gif" width="400"/>
+  <img src="assets/images/track_all_seg_1280_025conf.gif" width="400"/>
   </p>
   <br>
   <div>
   <a href="https://github.com/mikel-brostrom/yolov8_tracking/actions/workflows/ci.yml"><img src="https://github.com/mikel-brostrom/yolov8_tracking/actions/workflows/ci.yml/badge.svg" alt="CI CPU testing"></a>
-  <a href="https://pepy.tech/project/boxmot"><img src="https://static.pepy.tech/personalized-badge/boxmot?period=month&units=international_system&left_color=grey&right_color=orange&left_text=Downloads"></a>
+  <a href="https://pepy.tech/project/boxmot"><img src="https://static.pepy.tech/badge/boxmot"></a>
   <br>  
   <a href="https://colab.research.google.com/drive/18nIqkBr68TkK8dHdarxTco6svHUJGggY?usp=sharing"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
-<a href="https://doi.org/10.5281/zenodo.7629840"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.7629840.svg" alt="DOI"></a>
+<a href="https://doi.org/10.5281/zenodo.8132989"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.8132989.svg" alt="DOI"></a>
+
   </div>
 </div>
 
 
 ## Introduction
 
-This repo contains a collections of state-of-the-art multi-object trackers. Some of them are based on motion only, others on motion + appearance description. For the latter, state-of-the-art ReID model are downloaded automatically as well. Supported ones at the moment are: [DeepOCSORT](https://arxiv.org/abs/2302.11813) [LightMBN](https://arxiv.org/pdf/2101.10774.pdf), [BoTSORT](https://arxiv.org/abs/2206.14651) [LightMBN](https://github.com/jixunbo/LightMBN)[](https://arxiv.org/pdf/2101.10774.pdf), [StrongSORT](https://github.com/dyhBUPT/StrongSORT)[](https://arxiv.org/abs/2202.13514) [LightMBN](https://github.com/jixunbo/LightMBN)[](https://arxiv.org/pdf/2101.10774.pdf), [OCSORT](https://github.com/noahcao/OC_SORT)[](https://arxiv.org/abs/2203.14360) and [ByteTrack](https://github.com/ifzhang/ByteTrack)[](https://arxiv.org/abs/2110.06864).
+This repo contains a collections of state-of-the-art multi-object trackers. Supported ones at the moment are: [DeepOCSORT](https://arxiv.org/abs/2302.11813) , [BoTSORT](https://arxiv.org/abs/2206.14651) , [StrongSORT](https://github.com/dyhBUPT/StrongSORT)[](https://arxiv.org/abs/2202.13514), [OCSORT](https://github.com/noahcao/OC_SORT)[](https://arxiv.org/abs/2203.14360) and [ByteTrack](https://github.com/ifzhang/ByteTrack)[](https://arxiv.org/abs/2110.06864). DeepOCSORT, BoTSORT and StrongSORT are based on motion + appearance description; OCSORT and ByteTrack are based on motion only. For the methods using appearance description, lightweight state-of-the-art ReID models ([LightMBN](https://github.com/jixunbo/LightMBN)[](https://arxiv.org/pdf/2101.10774.pdf), [OSNet](https://github.com/KaiyangZhou/deep-person-reid)[](https://arxiv.org/abs/1905.00953) and more) are downloaded automatically as well.
 
-We provide examples on how to use this package together with popular object detection models. Right now [Yolov8](https://github.com/ultralytics), [Yolo-NAS](https://github.com/Deci-AI/super-gradients) and YOLOX are available.
+We provide examples on how to use this package together with popular object detection models. Right now [Yolov8](https://github.com/ultralytics), [Yolo-NAS](https://github.com/Deci-AI/super-gradients) and [YOLOX](https://github.com/Megvii-BaseDetection/YOLOX) are available.
 
 <details>
 <summary>Tutorials</summary>
@@ -137,22 +138,6 @@ $ python examples/track.py --source 0                               # webcam
 </details>
 
 <details>
-<summary>Select Yolov8 model</summary>
-
-There is a clear trade-off between model inference speed and overall performance. In order to make it possible to fulfill your inference speed/accuracy needs you can select a Yolov5 family model for automatic download. These model can be further optimized for you needs by the [export.py](https://github.com/ultralytics/yolov5/blob/master/export.py) script
-
-```bash
-$ python examples/track.py --source 0 --yolo-model yolov8n.pt --img 640
-                                          yolov8s.tflite
-                                          yolov8m.pt
-                                          yolov8l.onnx 
-                                          yolov8x.pt --img 1280
-                                          ...
-```
-  
-</details>
-
-<details>
 <summary>Select ReID model</summary>
 
 Some tracking methods combine appearance description and motion in the process of tracking. For those which use appearance, you can choose a ReID model based on your needs from this [ReID model zoo](https://kaiyangzhou.github.io/deep-person-reid/MODEL_ZOO). These model can be further optimized for you needs by the [reid_export.py](https://github.com/mikel-brostrom/yolo_tracking/blob/master/boxmot/deep/reid_export.py) script
@@ -186,10 +171,10 @@ python examples/track.py --source 0 --yolo-model yolov8s.pt --classes 16 17  # C
 <details>
 <summary>MOT compliant results</summary>
   
-Can be saved to your experiment folder `runs/track/<yolo_model>_<deep_sort_model>/` by 
+Can be saved to your experiment folder `runs/track/exp*/` by 
 
 ```bash
-python examples/track.py --source ... --save-txt
+python examples/track.py --source ... --save-mot
 ```
 
 </details>
@@ -278,7 +263,8 @@ fontscale = 0.5
 
 while True:
     ret, im = vid.read()
-    
+
+    # substitute by your object detector, output has to be N X (x, y, x, y, conf, cls)
     dets = np.array([[144, 212, 578, 480, 0.82, 0],
                     [425, 281, 576, 472, 0.56, 65]])
     

@@ -1,9 +1,7 @@
-from .yolo_strategy import YoloStrategy
-from boxmot.utils.checks import TestRequirements
-tr = TestRequirements()
+from .yolo_interface import YoloInterface
 
 
-class Yolov8Strategy(YoloStrategy):
+class Yolov8Strategy(YoloInterface):
     def __init__(self, model, device, args):
         self.model = model
 
@@ -14,4 +12,3 @@ class Yolov8Strategy(YoloStrategy):
     def postprocess(self, path, preds, im, im0s, predictor):
         postprocessed_preds = predictor.postprocess(preds, im, im0s)
         return postprocessed_preds
-

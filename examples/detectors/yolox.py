@@ -1,22 +1,12 @@
 import gdown
 import torch
-
-from .yolo_strategy import YoloStrategy
+from yolox.exp import get_exp
+from yolox.utils import postprocess
+from yolox.utils.model_utils import fuse_model
 
 from boxmot.utils import WEIGHTS
-from boxmot.utils.checks import TestRequirements
 
-tr = TestRequirements()
-try:
-    import yolox  # for linear_assignment
-except (ImportError, AssertionError, AttributeError):
-    tr.check_packages(('yolox==0.3.0',))  # install
-
-from yolox.utils import postprocess
-from yolox.exp import get_exp
-
-from ultralytics.yolo.engine.results import Results
-
+from .yolo_interface import YoloInterface
 
 YOLOX_ZOO = {
     'yolox_n': 'https://drive.google.com/uc?id=1AoN2AxzVwOLM0gJ15bcwqZUpFjlDV1dX',
@@ -27,7 +17,7 @@ YOLOX_ZOO = {
 }
 
 
-class YoloXStrategy(YoloStrategy):
+class YoloXStrategy(YoloInterface):
     def __init__(self, model, device, args):
 
         self.args = args
@@ -45,16 +35,17 @@ class YoloXStrategy(YoloStrategy):
 
         gdown.download(
             url=YOLOX_ZOO[model],
-            output=str(WEIGHTS / (model + '.pth')),
+            output=str(WEIGHTS / (model + '.pt')),
             quiet=False
         )
 
         ckpt = torch.load(
-            str(WEIGHTS / (model + '.pth')),
+            str(WEIGHTS / (model + '.pt')),
             map_location=torch.device('cpu')
         )
-        
+
         self.model.load_state_dict(ckpt["model"])
+        self.model = fuse_model(self.model)
         self.model.to(device)
 
     def inference(self, im):
@@ -93,14 +84,3 @@ class YoloXStrategy(YoloStrategy):
         preds = self.preds_to_yolov8_results(path, preds, im, im0s, predictor)
 
         return preds
-
-    def preds_to_yolov8_results(self, path, preds, im, im0s, predictor):
-        predictor.results[0] = Results(
-            path=path,
-            boxes=preds,
-            orig_img=im0s[0],
-            names=predictor.model.names
-        )
-        return predictor.results
-
-

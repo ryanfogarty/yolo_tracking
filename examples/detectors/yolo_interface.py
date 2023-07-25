@@ -1,11 +1,9 @@
-from pathlib import Path
 import numpy as np
 import torch
-
 from ultralytics.yolo.engine.results import Boxes, Results
 
 
-class YoloStrategy:
+class YoloInterface:
 
     def inference(self, im):
         raise NotImplementedError('Subclasses must implement this method.')
@@ -16,7 +14,8 @@ class YoloStrategy:
     def filter_results(self, i, predictor):
         if predictor.tracker_outputs[i].size != 0:
             # filter boxes masks and pose results by tracking results
-            predictor.tracker_outputs[i] = predictor.tracker_outputs[i][predictor.tracker_outputs[i][:, 5].argsort()[::-1]]
+            sorted_confs = predictor.tracker_outputs[i][:, 5].argsort()[::-1]
+            predictor.tracker_outputs[i] = predictor.tracker_outputs[i][sorted_confs]
             yolo_confs = predictor.results[i].boxes.conf.cpu().numpy()
             tracker_confs = predictor.tracker_outputs[i][:, 5]
             mask = np.in1d(yolo_confs, tracker_confs)
@@ -50,3 +49,12 @@ class YoloStrategy:
         h_r = im0_h / im_h
 
         return w_r, h_r
+
+    def preds_to_yolov8_results(self, path, preds, im, im0s, predictor):
+        predictor.results[0] = Results(
+            path=path,
+            boxes=preds,
+            orig_img=im0s[0],
+            names=predictor.model.names
+        )
+        return predictor.results

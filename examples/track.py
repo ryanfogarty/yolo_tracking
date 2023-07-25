@@ -1,7 +1,8 @@
 # https://github.com/ultralytics/ultralytics/issues/1429#issuecomment-1519239409
 import argparse
 from pathlib import Path
-
+import sys, os
+sys.path.append(os.path.dirname(__file__))
 import cv2
 import torch
 
@@ -34,9 +35,8 @@ def on_predict_start(predictor):
     predictor.args.tracking_config = \
         ROOT /\
         'boxmot' /\
-        predictor.args.tracking_method /\
         'configs' /\
-        (predictor.args.tracking_method + '.yaml')
+        (opt.tracking_method + '.yaml')
     for i in range(predictor.dataset.bs):
         tracker = create_tracker(
             predictor.args.tracking_method,
@@ -234,9 +234,9 @@ def run(args):
 
 def parse_opt():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--yolo-model', type=Path, default=WEIGHTS / 'bestv8.pt', help='model.pt path(s)')
+    parser.add_argument('--yolo-model', type=Path, default=WEIGHTS / 'yolov8best.pt', help='model.pt path(s)')
     parser.add_argument('--reid-model', type=Path, default=WEIGHTS / 'mobilenetv2_x1_4_dukemtmcreid.pt')
-    parser.add_argument('--tracking-method', type=str, default='deepocsort',
+    parser.add_argument('--tracking-method', type=str, default='bytetrack',
                         help='deepocsort, botsort, strongsort, ocsort, bytetrack')
     parser.add_argument('--source', type=str, default='0',
                         help='file/dir/URL/glob, 0 for webcam')
@@ -263,7 +263,7 @@ def parse_opt():
                         help='existing project/name ok, do not increment')
     parser.add_argument('--half', action='store_true',
                         help='use FP16 half-precision inference')
-    parser.add_argument('--vid-stride', type=int, default=1,
+    parser.add_argument('--vid-stride', type=int, default=3,
                         help='video frame-rate stride')
     parser.add_argument('--show-labels', action='store_false',
                         help='hide labels when show')

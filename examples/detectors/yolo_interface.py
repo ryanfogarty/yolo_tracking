@@ -34,7 +34,7 @@ class YoloInterface:
         if predictor.tracker_outputs[i].size != 0:
             predictor.results[i].boxes = Boxes(
                 # xyxy, (track_id), conf, cls
-                boxes=torch.from_numpy(predictor.tracker_outputs[i]).to(predictor.device),
+                boxes=torch.from_numpy(predictor.tracker_outputs[i]).to(torch.float32).to(predictor.device),
                 orig_shape=im0_shape,  # (height, width)
             )
 

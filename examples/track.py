@@ -1,266 +1,217 @@
-# https://github.com/ultralytics/ultralytics/issues/1429#issuecomment-1519239409
+# Mikel Broström 🔥 Yolo Tracking 🧾 AGPL-3.0 license
 import sys, os
-from pathlib import Path
-import torch
 import argparse
-import cv2
+from functools import partial
+from pathlib import Path
 
-from boxmot.tracker_zoo import create_tracker
-#from boxmot.utils import WEIGHTS
-from boxmot.utils.checks import TestRequirements
-from boxmot.utils import ROOT, WEIGHTS
-from boxmot.utils import logger as LOGGER
-from boxmot.utils.torch_utils import select_device
-
-from boxmot.utils.checks import TestRequirements
-__tr = TestRequirements()
-__tr.check_packages(('ultralytics==8.0.124',))  # install
-
-from ultralytics.yolo.engine.model import YOLO, TASK_MAP
-
-from ultralytics.yolo.utils import colorstr, ops, IterableSimpleNamespace
-from ultralytics.yolo.utils.checks import check_imgsz
-from ultralytics.yolo.utils.files import increment_path
-from ultralytics.yolo.data.utils import VID_FORMATS
-from ultralytics.yolo.utils.plotting import save_one_box
-
+import torch
 sys.path.append(os.path.dirname(__file__))
-from multi_yolo_backend import MultiYolo
-from utils import write_MOT_results
-
+from boxmot import TRACKERS
+from boxmot.tracker_zoo import create_tracker
+from boxmot.utils import logger as LOGGER
+from boxmot.utils import ROOT, WEIGHTS
+from boxmot.utils.checks import TestRequirements
+from examples.detectors import get_yolo_inferer
+from collections import OrderedDict
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[1]
 WEIGHTS = ROOT / 'weights'
-from detectors.yolo_processor import Yolo
-from detectors.strategy import find_yolo_engine
-from utils import write_MOT_results
 
-from boxmot.utils import EXAMPLES
+__tr = TestRequirements()
+__tr.check_packages(('ultralytics @ git+https://github.com/mikel-brostrom/ultralytics.git', ))  # install
+from ultralytics import YOLO
+from ultralytics.data.utils import VID_FORMATS
+from ultralytics.utils.plotting import save_one_box
+
+from examples.utils import write_mot_results
 
 
-def on_predict_start(predictor):
-    predictor.trackers = []
-    predictor.tracker_outputs = [None] * predictor.dataset.bs
-    predictor.args.tracking_config = \
+def on_predict_start(predictor, persist=False):
+    """
+    Initialize trackers for object tracking during prediction.
+
+    Args:
+        predictor (object): The predictor object to initialize trackers for.
+        persist (bool, optional): Whether to persist the trackers if they already exist. Defaults to False.
+    """
+
+    assert predictor.custom_args.tracking_method in TRACKERS, \
+        f"'{predictor.custom_args.tracking_method}' is not supported. Supported ones are {TRACKERS}"
+
+    tracking_config = \
         ROOT /\
         'boxmot' /\
-        predictor.args.tracking_method /\
         'configs' /\
-        (predictor.args.tracking_method + '.yaml')
+        (predictor.custom_args.tracking_method + '.yaml')
+    trackers = []
     for i in range(predictor.dataset.bs):
         tracker = create_tracker(
-            predictor.args.tracking_method,
-            predictor.args.tracking_config,
-            predictor.args.reid_model,
+            predictor.custom_args.tracking_method,
+            tracking_config,
+            predictor.custom_args.reid_model,
             predictor.device,
-            predictor.args.half,
-            predictor.args.per_class
+            predictor.custom_args.half,
+            predictor.custom_args.per_class
         )
-        predictor.trackers.append(tracker)
+        # motion only modeles do not have
+        if hasattr(tracker, 'model'):
+            tracker.model.warmup()
+        trackers.append(tracker)
+
+    predictor.trackers = trackers
 
 
 @torch.no_grad()
 def run(args):
-    model = YOLO(args['yolo_model'] if 'v8' in str(args['yolo_model']) else 'yolov8n')
-    overrides = model.overrides.copy()
-    model.predictor = TASK_MAP[model.task][3](overrides=overrides, _callbacks=model.callbacks)
-    
-    # extract task predictor
-    predictor = model.predictor
 
-    # combine default predictor args with custom, preferring custom
-    combined_args = {**predictor.args.__dict__, **args}
-    # overwrite default args
-    predictor.args = IterableSimpleNamespace(**combined_args)
-    predictor.args.device = select_device(args['device'])
-    LOGGER.info(args)
-
-    # setup source and model
-    if not predictor.model:
-        predictor.setup_model(model=model.model, verbose=False)
-    predictor.setup_source(predictor.args.source)
-    
-    predictor.args.imgsz = check_imgsz(predictor.args.imgsz, stride=model.model.stride, min_dim=2)  # check image size
-    predictor.save_dir = increment_path(Path(predictor.args.project) / predictor.args.name, exist_ok=predictor.args.exist_ok)
-    
-    # Check if save_dir/ label file exists
-    if predictor.args.save or predictor.args.save_txt:
-        (predictor.save_dir / 'labels' if predictor.args.save_txt else predictor.save_dir).mkdir(parents=True, exist_ok=True)
-    # Warmup model
-    if not predictor.done_warmup:
-        predictor.model.warmup(imgsz=(1 if predictor.model.pt or predictor.model.triton else predictor.dataset.bs, 3, *predictor.imgsz))
-        predictor.done_warmup = True
-    predictor.seen, predictor.windows, predictor.batch, predictor.profilers = 0, [], None, (ops.Profile(), ops.Profile(), ops.Profile(), ops.Profile())
-    predictor.add_callback('on_predict_start', on_predict_start)
-    predictor.run_callbacks('on_predict_start') 
-
-    yolo_strategy = find_yolo_engine(args['yolo_model'])
-    yolo_strategy = yolo_strategy(
-        model=model.predictor.model if 'v8' in str(args['yolo_model']) else args['yolo_model'],
-        device=predictor.device,
-        args=predictor.args
+    yolo = YOLO(
+        args.yolo_model if 'yolov8' in str(args.yolo_model) else 'yolov8n.pt',
     )
-
     carIds = {}
     carCount = 0
-    model = Yolo(yolo_strategy)
 
-    for frame_idx, batch in enumerate(predictor.dataset):
-        predictor.run_callbacks('on_predict_batch_start')
-        predictor.batch = batch
-        path, im0s, vid_cap, s = batch
+    results = yolo.track(
+        source=args.source,
+        conf=args.conf,
+        iou=args.iou,
+        show=args.show,
+        stream=True,
+        device=args.device,
+        show_conf=args.show_conf,
+        save_txt=args.save_txt,
+        show_labels=args.show_labels,
+        save=args.save,
+        verbose=args.verbose,
+        exist_ok=args.exist_ok,
+        project=args.project,
+        name=args.name,
+        classes=args.classes,
+        imgsz=args.imgsz,
+        vid_stride=args.vid_stride,
+        line_width=args.line_width
+    )
 
-        n = len(im0s)
-        predictor.results = [None] * n
-        
-        # Preprocess
-        with predictor.profilers[0]:
-            im = predictor.preprocess(im0s)
+    yolo.add_callback('on_predict_start', partial(on_predict_start, persist=True))
 
-        # Inference
-        with predictor.profilers[1]:
-            preds = model.inference(im=im)
+    if 'yolov8' not in str(args.yolo_model):
+        # replace yolov8 model
+        m = get_yolo_inferer(args.yolo_model)
+        model = m(
+            model=args.yolo_model,
+            device=yolo.predictor.device,
+            args=yolo.predictor.args
+        )
+        yolo.predictor.model = model
 
-        # Postprocess moved to MultiYolo
-        with predictor.profilers[2]:
-            predictor.results = model.postprocess(path, preds, im, im0s, predictor)
-        predictor.run_callbacks('on_predict_postprocess_end')
-        
+    # store custom args in predictor
+    yolo.predictor.custom_args = args
 
-        # Visualize, save, write results
-        n = len(im0s)
-        for i in range(n):
-            if predictor.dataset.source_type.tensor:  # skip write, show and plot operations if input is raw tensor
-                continue
-            p, im0 = path[i], im0s[i].copy()
-            p = Path(p)
-            
-            with predictor.profilers[3]:
-                # get raw bboxes tensor
-                dets = predictor.results[i].boxes.data
-                # get tracker predictions
-                predictor.tracker_outputs[i] = predictor.trackers[i].update(dets.cpu().detach().numpy(), im0)
-            predictor.results[i].speed = {
-                'preprocess': predictor.profilers[0].dt * 1E3 / n,
-                'inference': predictor.profilers[1].dt * 1E3 / n,
-                'postprocess': predictor.profilers[2].dt * 1E3 / n,
-                'tracking': predictor.profilers[3].dt * 1E3 / n
-            }
-
-            # filter boxes masks and pose results by tracking results
-            model.filter_results(i, predictor)
-            # overwrite bbox results with tracker predictions
-            model.overwrite_results(i, im0.shape[:2], predictor)
-
-            if(predictor.results[i].boxes.id is not None):
-                id = int(predictor.results[i].boxes.id[0])
+    for frame_idx, r in enumerate(results):
+        #print(OrderedDict(carIds))
+        print(dict(sorted(carIds.items())))
+        if(r.boxes.id is not None):
+            for i in range(len(r.boxes)):
+                id = int(r.boxes.id[i])
                 if id in carIds:
                     carIds[id] += 1
-                    if carIds[id] == 5:
+                    if carIds[id] == 3:
                         carCount += 1
                 else:
                     carIds[id] = 1
                 LOGGER.info("Car count: " + str(carCount))
-            
-            # write inference results to a file or directory   
-            if predictor.args.verbose or predictor.args.save or predictor.args.save_txt or predictor.args.show or predictor.args.save_id_crops:
-                
-                s += predictor.write_results(i, predictor.results, (p, im, im0))
-                predictor.txt_path = Path(predictor.txt_path)
-                
-                # write MOT specific results
-                if predictor.args.source.endswith(VID_FORMATS):
-                    predictor.MOT_txt_path = predictor.txt_path.parent / p.stem
-                else:
-                    # append folder name containing current img
-                    predictor.MOT_txt_path = predictor.txt_path.parent / p.parent.name
-                    
-                if predictor.tracker_outputs[i].size != 0 and predictor.args.save_mot:
-                    write_MOT_results(
-                        predictor.MOT_txt_path,
-                        predictor.results[i],
-                        frame_idx,
-                        i,
+        if r.boxes.data.shape[1] == 7:
+
+            if yolo.predictor.source_type.webcam or args.source.endswith(VID_FORMATS):
+                p = yolo.predictor.save_dir / 'mot' / (args.source + '.txt')
+                yolo.predictor.mot_txt_path = p
+            elif 'MOT16' or 'MOT17' or 'MOT20' in args.source:
+                p = yolo.predictor.save_dir / 'mot' / (Path(args.source).parent.name + '.txt')
+                yolo.predictor.mot_txt_path = p
+
+            if args.save_mot:
+                write_mot_results(
+                    yolo.predictor.mot_txt_path,
+                    r,
+                    frame_idx,
+                )
+
+            if args.save_id_crops:
+                for d in r.boxes:
+                    print('args.save_id_crops', d.data)
+                    save_one_box(
+                        d.xyxy,
+                        r.orig_img.copy(),
+                        file=(
+                            yolo.predictor.save_dir / 'crops' /
+                            str(int(d.cls.cpu().numpy().item())) /
+                            str(int(d.id.cpu().numpy().item())) / f'{frame_idx}.jpg'
+                        ),
+                        BGR=True
                     )
 
-                if predictor.args.save_id_crops:
-                    for d in predictor.results[i].boxes:
-                        save_one_box(
-                            d.xyxy,
-                            im0.copy(),
-                            file=predictor.save_dir / 'crops' / str(int(d.cls.cpu().numpy().item())) / str(int(d.id.cpu().numpy().item())) / f'{p.stem}.jpg',
-                            BGR=True
-                        )
-
-            # display an image in a window using OpenCV imshow()
-            if predictor.args.show and predictor.plotted_img is not None:
-                predictor.show(p.parent)
-
-            # save video predictions
-            if predictor.args.save and predictor.plotted_img is not None:
-                predictor.save_preds(vid_cap, i, str(predictor.save_dir / p.name))
-
-        predictor.run_callbacks('on_predict_batch_end')
-
-        # print time (inference-only)
-        if predictor.args.verbose:
-            LOGGER.info(f'{s}YOLO {predictor.profilers[1].dt * 1E3:.1f}ms, TRACKING {predictor.profilers[3].dt * 1E3:.1f}ms')
-
-    # Release assets
-    if isinstance(predictor.vid_writer[-1], cv2.VideoWriter):
-        predictor.vid_writer[-1].release()  # release final video writer
-
-    # Print results
-    if predictor.args.verbose and predictor.seen:
-        t = tuple(x.t / predictor.seen * 1E3 for x in predictor.profilers)  # speeds per image
-        LOGGER.info(f'Speed: %.1fms preprocess, %.1fms inference, %.1fms postprocess, %.1fms tracking per image at shape '
-                    f'{(1, 3, *predictor.args.imgsz)}' % t)
-    if predictor.args.save or predictor.args.save_txt or predictor.args.save_crop:
-        nl = len(list(predictor.save_dir.glob('labels/*.txt')))  # number of labels
-        s = f"\n{nl} label{'s' * (nl > 1)} saved to {predictor.save_dir / 'labels'}" if predictor.args.save_txt else ''
-        LOGGER.info(f"Results saved to {colorstr('bold', predictor.save_dir)}{s}")
-
-    predictor.run_callbacks('on_predict_end')
+    if args.save_mot:
+        print(f'MOT results saved to {yolo.predictor.mot_txt_path}')
     return carCount
+
 
 def parse_opt():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--yolo-model', type=Path, default=WEIGHTS / 'bestv8.pt', help='model.pt path(s)')
-    parser.add_argument('--reid-model', type=Path, default=WEIGHTS / 'mobilenetv2_x1_4_dukemtmcreid.pt')
-    parser.add_argument('--tracking-method', type=str, default='deepocsort', help='deepocsort, botsort, strongsort, ocsort, bytetrack')
-    parser.add_argument('--source', type=str, default='0', help='file/dir/URL/glob, 0 for webcam')  
-    parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
-    parser.add_argument('--conf', type=float, default=0.5, help='confidence threshold')
-    parser.add_argument('--iou', type=float, default=0.7, help='intersection over union (IoU) threshold for NMS')
-    parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
-    parser.add_argument('--show', action='store_true', help='display tracking video results')
-    parser.add_argument('--save', default=True, action='store_true', help='save video tracking results')
-    # # class 0 is person, 1 is bycicle, 2 is car... 79 is oven
-    parser.add_argument('--classes', nargs='+', type=int, help='filter by class: --classes 0, or --classes 0 2 3')
-    parser.add_argument('--project', default=EXAMPLES / 'runs' / 'track', help='save results to project/name')
-    parser.add_argument('--name', default='exp', help='save results to project/name')
-    parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
-    parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
-    parser.add_argument('--vid-stride', type=int, default=4, help='video frame-rate stride')
-    parser.add_argument('--hide-label', action='store_true', help='hide labels when show')
-    parser.add_argument('--hide-conf', action='store_true', help='hide confidences when show')
-    parser.add_argument('--vid-stride', type=int, default=1, help='video frame-rate stride')
-    parser.add_argument('--show-labels', action='store_false', help='hide labels when show')
-    parser.add_argument('--show-conf', action='store_false', help='hide confidences when show')
-    parser.add_argument('--save-txt', action='store_true', help='save tracking results in a txt file')
-    parser.add_argument('--save-id-crops', action='store_true', help='save each crop to its respective id folder')
-    parser.add_argument('--save-mot', action='store_true', help='save tracking results in a single txt file')
-    parser.add_argument('--line-width', default=None, type=int, help='The line width of the bounding boxes. If None, it is scaled to the image size.')
-    parser.add_argument('--per-class', action='store_true', help='not mix up classes when tracking')
-    
+    parser.add_argument('--yolo-model', type=Path, default=WEIGHTS / 'yolov8_test_zakim.pt',
+                        help='yolo model path')
+    parser.add_argument('--reid-model', type=Path, default=WEIGHTS / 'osnet_x0_25_msmt17.pt',
+                        help='reid model path')
+    parser.add_argument('--tracking-method', type=str, default='ocsort',
+                        help='deepocsort, botsort, strongsort, ocsort, bytetrack')
+    parser.add_argument('--source', type=str, default='0',
+                        help='file/dir/URL/glob, 0 for webcam')
+    parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640],
+                        help='inference size h,w')
+    parser.add_argument('--conf', type=float, default=0.5,
+                        help='confidence threshold')
+    parser.add_argument('--iou', type=float, default=0.7,
+                        help='intersection over union (IoU) threshold for NMS')
+    parser.add_argument('--device', default='mps',
+                        help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    parser.add_argument('--show', action='store_true',
+                        help='display tracking video results')
+    parser.add_argument('--save', action='store_true',
+                        help='save video tracking results')
+    # class 0 is person, 1 is bycicle, 2 is car... 79 is oven
+    parser.add_argument('--classes', nargs='+', type=int,
+                        help='filter by class: --classes 0, or --classes 0 2 3')
+    parser.add_argument('--project', default=ROOT / 'runs' / 'track',
+                        help='save results to project/name')
+    parser.add_argument('--name', default='exp',
+                        help='save results to project/name')
+    parser.add_argument('--exist-ok', action='store_true',
+                        help='existing project/name ok, do not increment')
+    parser.add_argument('--half', action='store_true',
+                        help='use FP16 half-precision inference')
+    parser.add_argument('--vid-stride', type=int, default=1,
+                        help='video frame-rate stride')
+    parser.add_argument('--show-labels', action='store_false',
+                        help='either show all or only bboxes')
+    parser.add_argument('--show-conf', action='store_false',
+                        help='hide confidences when show')
+    parser.add_argument('--save-txt', action='store_true',
+                        help='save tracking results in a txt file')
+    parser.add_argument('--save-id-crops', action='store_true',
+                        help='save each crop to its respective id folder')
+    parser.add_argument('--save-mot', action='store_true',
+                        help='save tracking results in a single txt file')
+    parser.add_argument('--line-width', default=None, type=int,
+                        help='The line width of the bounding boxes. If None, it is scaled to the image size.')
+    parser.add_argument('--per-class', default=False, action='store_true',
+                        help='not mix up classes when tracking')
+    parser.add_argument('--verbose', default=True, action='store_true',
+                        help='print results per frame')
+    parser.add_argument('--vid_stride', default=5, type=int,
+                        help='video frame-rate stride')
+
     opt = parser.parse_args()
     return opt
 
 
-def main(opt):
-    run(vars(opt))
-
-
 if __name__ == "__main__":
     opt = parse_opt()
-    main(opt)
+    run(opt)

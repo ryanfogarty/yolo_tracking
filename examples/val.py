@@ -1,4 +1,5 @@
-#  Yolov5_StrongSORT_OSNet, GPL-3.0 license
+# Mikel Broström 🔥 Yolo Tracking 🧾 AGPL-3.0 license
+
 """
 Evaluate on the benchmark of your choice. MOT16, 17 and 20 are donwloaded and unpackaged automatically when selected.
 Mimic the structure of either of these datasets to evaluate on your custom one
@@ -10,29 +11,29 @@ Usage:
                      --tracking-method ocsort     --benchmark <your-custom-dataset>
 """
 
-import os
-import sys
-import torch
-import subprocess
-from subprocess import Popen
 import argparse
-import git
+import os
 import re
-import yaml
-from git import Repo
+import shutil
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
-import shutil
-from tqdm import tqdm
-import numpy as np
+
+from boxmot.utils.checks import TestRequirements
+
+__tr = TestRequirements()
+__tr.check_packages(('ultralytics @ git+https://github.com/mikel-brostrom/ultralytics.git', ))  # install
+
+import git
+from git import Repo
 from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
+from ultralytics.utils.checks import check_requirements, print_args
+from ultralytics.utils.files import increment_path
 
+from boxmot.utils import EXAMPLES, ROOT, WEIGHTS
 from boxmot.utils import logger as LOGGER
-from ultralytics.yolo.utils.checks import check_requirements, print_args
-from ultralytics.yolo.utils.files import increment_path
-
-from boxmot.utils import ROOT, WEIGHTS, EXAMPLES
-from track import run
 
 
 class Evaluator:
@@ -61,7 +62,7 @@ class Evaluator:
             Repo.clone_from(val_tools_url, val_tools_path)
             LOGGER.info('Official MOT evaluation repo downloaded')
         except git.exc.GitError as err:
-            LOGGER.info('Eval repo already downloaded')
+            LOGGER.info(f'Eval repo already downloaded {err}')
 
     def download_mot_dataset(self, val_tools_path, benchmark):
         """Download specific MOT dataset and unpack it
@@ -91,7 +92,7 @@ class Evaluator:
                                 zip_file.extract(member, val_tools_path / 'data')
                 LOGGER.info(f'{benchmark}.zip unzipped successfully')
             except Exception as e:
-                LOGGER.error(f'{benchmark}.zip is corrupted. Try deleting the file and run the script again')
+                LOGGER.error(f'{benchmark}.zip is corrupted. Try deleting the file and run the script again {e}')
                 sys.exit()
 
     def eval_setup(self, opt, val_tools_path):
@@ -102,7 +103,8 @@ class Evaluator:
             val_tools_path (pathlib.Path): path to destination folder of the downloaded MOT benchmark zip
 
         Returns:
-            [Path], Path, Path: benchmark sequence paths, original tracking results destination, eval tracking result destination
+            [Path], Path, Path: benchmark sequence paths,
+            original tracking results destination, eval tracking result destination
         """
 
         # set paths
@@ -126,8 +128,11 @@ class Evaluator:
             if not (Path(opt.project) / opt.name).exists():
                 LOGGER.error(f'{save_dir} does not exist')
         else:
-            save_dir = increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok)
-        MOT_results_folder = val_tools_path / 'data' / 'trackers' / 'mot_challenge' / opt.benchmark / save_dir.name / 'data'
+            save_dir = increment_path(Path(opt.project) / opt.name, exist_ok=False)
+        MOT_results_folder = (
+            val_tools_path / 'data' / 'trackers' /
+            'mot_challenge' / opt.benchmark / save_dir.name / 'data'
+        )
         (MOT_results_folder).mkdir(parents=True, exist_ok=True)  # make
         return seq_paths, save_dir, MOT_results_folder, gt_folder
 
@@ -152,7 +157,7 @@ class Evaluator:
 
     def eval(self, opt, seq_paths, save_dir, MOT_results_folder, val_tools_path, gt_folder, free_devices):
         """Benchmark evaluation
-        
+
         Runns each benchmark sequence on the selected device configuration and moves the results to
         a unique eval folder
 
@@ -172,6 +177,7 @@ class Evaluator:
             processes = []
 
             busy_devices = []
+
             for i, seq_path in enumerate(seq_paths):
                 # spawn one subprocess per GPU in increasing order.
                 # When max devices are reached start at 0 again
@@ -186,13 +192,7 @@ class Evaluator:
                 tracking_subprocess_device = free_devices.pop(0)
                 busy_devices.append(tracking_subprocess_device)
 
-                dst_seq_path = seq_path.parent / seq_path.parent.name
-
-                if not dst_seq_path.is_dir():
-                    src_seq_path = seq_path
-                    shutil.move(str(src_seq_path), str(dst_seq_path))
-                
-                LOGGER.info(f"Staring evaluation process on {dst_seq_path}")
+                LOGGER.info(f"Staring evaluation process on {seq_path}")
                 p = subprocess.Popen(
                     args=[
                         sys.executable, str(EXAMPLES / "track.py"),
@@ -203,33 +203,28 @@ class Evaluator:
                         "--imgsz", str(self.opt.imgsz[0]),
                         "--classes", *self.opt.classes,
                         "--name", save_dir.name,
+                        "--save" if self.opt.save else ""
                         "--save-mot",
                         "--project", self.opt.project,
                         "--device", str(tracking_subprocess_device),
-                        "--source", dst_seq_path,
+                        "--source", seq_path,
                         "--exist-ok",
-                        "--save",
                     ],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
                 )
                 processes.append(p)
                 # Wait for the subprocess to complete and capture output
-                stdout, stderr = p.communicate()
-                
-                # Check the return code of the subprocess
-                if p.returncode != 0:
-                    LOGGER.error(stderr)
-                    LOGGER.error(stdout)
-                    sys.exit(1)
-                else:
-                    LOGGER.success(f"{dst_seq_path} evaluation succeeded")
 
             for p in processes:
                 p.wait()
 
+            LOGGER.success("Evaluation succeeded")
+
         print_args(vars(self.opt))
+
+        if opt.gsi:
+            # apply gaussian-smoothed interpolation
+            from boxmot.postprocessing.gsi import gsi
+            gsi(mot_results_folder=save_dir / 'mot')
 
         # run the evaluation on the generated txts
         d = [seq_path.parent.name for seq_path in seq_paths]
@@ -239,7 +234,7 @@ class Evaluator:
                 "--GT_FOLDER", gt_folder,
                 "--BENCHMARK", "",
                 "--TRACKERS_FOLDER", save_dir,   # project/name
-                "--TRACKERS_TO_EVAL", "labels",  # project/name/labels
+                "--TRACKERS_TO_EVAL", "mot",  # project/name/mot
                 "--SPLIT_TO_EVAL", "train",
                 "--METRICS", "HOTA", "CLEAR", "Identity",
                 "--USE_PARALLEL", "True",
@@ -263,7 +258,7 @@ class Evaluator:
 
         LOGGER.info(stdout)
 
-        # save MOT results in txt 
+        # save MOT results in txt
         with open(save_dir / 'MOT_results.txt', 'w') as f:
             f.write(stdout)
         # copy tracking method config to exp folder
@@ -295,7 +290,7 @@ class Evaluator:
 
     def run(self, opt):
         """Download all needed resources for evaluation, setup and evaluate
-        
+
         Downloads evaluation tools and MOT dataset. Setup to make evaluation possible on different benchmarks
         and with custom devices configuration.
 
@@ -328,21 +323,35 @@ class Evaluator:
 def parse_opt():
     parser = argparse.ArgumentParser()
     parser.add_argument('--yolo-model', type=str, default=WEIGHTS / 'yolov8n.pt', help='model.pt path(s)')
-    parser.add_argument('--reid-model', type=str, default=WEIGHTS / 'mobilenetv2_x1_4_dukemtmcreid.pt')
-    parser.add_argument('--tracking-method', type=str, default='deepocsort', help='strongsort, ocsort')
-    parser.add_argument('--name', default='exp', help='save results to project/name')
-    parser.add_argument('--classes', nargs='+', type=str, default=['0'], help='filter by class: --classes 0, or --classes 0 2 3')
-    parser.add_argument('--project', default=EXAMPLES / 'runs' / 'val', help='save results to project/name')
-    parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
-    parser.add_argument('--benchmark', type=str, default='MOT17-mini', help='MOT16, MOT17, MOT20')
-    parser.add_argument('--split', type=str, default='train', help='existing project/name ok, do not increment')
-    parser.add_argument('--eval-existing', action='store_true', help='evaluate existing results under project/name/labels')
-    parser.add_argument('--conf', type=float, default=0.45, help='confidence threshold')
-    parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[1280], help='inference size h,w')
-    parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    parser.add_argument('--reid-model', type=str, default=WEIGHTS / 'osnet_x0_25_msmt17.pt')
+    parser.add_argument('--tracking-method', type=str, default='deepocsort',
+                        help='strongsort, ocsort')
+    parser.add_argument('--name', default='exp',
+                        help='save results to project/name')
+    parser.add_argument('--classes', nargs='+', type=str, default=['0'],
+                        help='filter by class: --classes 0, or --classes 0 2 3')
+    parser.add_argument('--project', default=ROOT / 'runs' / 'val',
+                        help='save results to project/name')
+    parser.add_argument('--exist-ok', action='store_true',
+                        help='existing project/name ok, do not increment')
+    parser.add_argument('--gsi', action='store_true',
+                        help='apply gsi to results')
+    parser.add_argument('--benchmark', type=str, default='MOT17-mini',
+                        help='MOT16, MOT17, MOT20')
+    parser.add_argument('--split', type=str, default='train',
+                        help='existing project/name ok, do not increment')
+    parser.add_argument('--eval-existing', action='store_true',
+                        help='evaluate existing results under project/name/mot')
+    parser.add_argument('--conf', type=float, default=0.45,
+                        help='confidence threshold')
+    parser.add_argument('--imgsz', '--img-size', nargs='+', type=int, default=[1280],
+                        help='inference size h,w')
+    parser.add_argument('--device', default='',
+                        help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    parser.add_argument('--save', action='store_true',
+                        help='save video tracking results')
     parser.add_argument('--processes-per-device', type=int, default=2,
                         help='how many subprocesses can be invoked per GPU (to manage memory consumption)')
-
     opt = parser.parse_args()
     device = []
 

@@ -3,6 +3,8 @@
 .eggs/
 env/
 *.DS_Store
+.coverage
+htmlcov/
 # interpreter bytecode
 __pycache__/
 
@@ -43,3 +45,6 @@ tf_models/
 build/
 dist/
 *.egg-info/
+
+# cmc debug images
+boxmot/motion/cmc/*.jpg

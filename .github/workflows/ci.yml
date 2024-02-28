@@ -9,6 +9,13 @@ on:
     # pull request where master is target
     branches: [master]
 
+env:
+  # Directory of PyPi package to be tested
+  PACKAGE_DIR: boxmot
+  # Minimum acceptable test coverage
+  # Increase as you add more tests to increase coverage
+  COVERAGE_FAIL_UNDER: 29
+
 # the workflow that gets triggerd
 jobs:
   build:
@@ -24,8 +31,8 @@ jobs:
     # Timeout: https://stackoverflow.com/a/59076067/4521646
     timeout-minutes: 50
     steps:
-      
-      - uses: actions/checkout@v3  # Check out the repository
+
+      - uses: actions/checkout@v4  # Check out the repository
       - uses: actions/setup-python@v4  # Prepare environment with python 3.9
         with:
           python-version: ${{ matrix.python-version }}
@@ -34,52 +41,64 @@ jobs:
         shell: bash  # for Windows compatibility
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install -e . pytest --extra-index-url https://download.pytorch.org/whl/cpu
-          pip install ultralytics==8.0.124 super-gradients==3.1.1
+          pip install -e . pytest pytest-cov --extra-index-url https://download.pytorch.org/whl/cpu
           python --version
           pip --version
           pip list
 
-      - name: Pytest tests
-        shell: bash  # for Windows compatibility
-        run: pytest tests
-
       - name: Tests all tracking options
         shell: bash  # for Windows compatibility
         env:
-          IMG: ./assets/MOT17-mini/train/MOT17-05-FRCNN/MOT17-05-FRCNN/000001.jpg
+          IMG: ./assets/MOT17-mini/train/MOT17-05-FRCNN/img1/000001.jpg
         run: |
           # deepocsort fro all supported yolo models
-          python examples/track.py --tracking-method deepocsort --source $IMG --imgsz 320
+          python examples/track.py --tracking-method deepocsort --source $IMG --imgsz 320 --reid-model examples/weights/clip_market1501.pt
           python examples/track.py --yolo-model yolo_nas_s --tracking-method deepocsort --source $IMG --imgsz 320
           python examples/track.py --yolo-model yolox_n --tracking-method deepocsort --source $IMG --imgsz 320
 
+          # hybridsort
+          python examples/track.py --tracking-method hybridsort --source $IMG --imgsz 320
+
           # botsort
           python examples/track.py --tracking-method botsort --source $IMG --imgsz 320
-          
+
           # strongsort
           python examples/track.py --tracking-method strongsort --source $IMG --imgsz 320
-          
+
           # ocsort
           python examples/track.py --tracking-method ocsort --source $IMG --imgsz 320
-          
+
           # bytetrack
           python examples/track.py --tracking-method bytetrack --source $IMG --imgsz 320
-          
-      - name: Tests tracker with exported reid model
-        env:
-            IMG: ./assets/MOT17-mini/train/MOT17-05-FRCNN/MOT17-05-FRCNN/000001.jpg
+
+      - name: Pytest tests  # after tracking options as this does not download models
         shell: bash  # for Windows compatibility
         run: |
-          # export
-          python boxmot/appearance/reid_export.py  # defaults to torchscript
-          
-          # strongsort w. exported reid model
-          python examples/track.py --reid-model examples/weights/mobilenetv2_x1_4_dukemtmcreid.torchscript --source $IMG --imgsz 320
-      
+
+          # needed in TFLite export
+          wget https://github.com/PINTO0309/onnx2tf/releases/download/1.7.3/flatc.tar.gz
+          tar -zxvf flatc.tar.gz
+          sudo chmod +x flatc
+          sudo mv flatc /usr/bin/
+
+          pytest --cov=$PACKAGE_DIR --cov-report=html -v tests
+          coverage report --fail-under=$COVERAGE_FAIL_UNDER
+
+      - name: Tests exported reid models
+        env:
+            IMG: ./assets/MOT17-mini/train/MOT17-05-FRCNN/img1/000001.jpg
+        shell: bash  # for Windows compatibility
+        run: |
+
+          # test exported reid model
+          python examples/track.py --reid-model examples/weights/osnet_x0_25_msmt17.torchscript                                   --source $IMG --imgsz 320
+          python examples/track.py --reid-model examples/weights/osnet_x0_25_msmt17.onnx                                          --source $IMG --imgsz 320
+          python examples/track.py --reid-model examples/weights/osnet_x0_25_msmt17_saved_model/osnet_x0_25_msmt17_float16.tflite --source $IMG --imgsz 320
+          python examples/track.py --reid-model examples/weights/osnet_x0_25_msmt17_openvino_model                                --source $IMG --imgsz 320
+
       - name: Test tracking with seg models
         env:
-            IMG: ./assets/MOT17-mini/train/MOT17-05-FRCNN/MOT17-05-FRCNN/000001.jpg
+            IMG: ./assets/MOT17-mini/train/MOT17-05-FRCNN/img1/000001.jpg
         shell: bash  # for Windows compatibility
         run: |
           # tracking with SEG models
@@ -87,7 +106,7 @@ jobs:
 
       - name: Test tracking with pose models
         env:
-          IMG: ./assets/MOT17-mini/train/MOT17-05-FRCNN/MOT17-05-FRCNN/000001.jpg
+          IMG: ./assets/MOT17-mini/train/MOT17-05-FRCNN/img1/000001.jpg
         shell: bash  # for Windows compatibility
         run: |
           # tracking with POSE models
@@ -104,4 +123,3 @@ jobs:
         run: |
           # evolve a for a single set of parameters
           python examples/evolve.py --objectives HOTA,MOTA,IDF1 --benchmark MOT17-mini --n-trials 1 --imgsz 320 --conf 0.2
-
